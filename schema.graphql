@@ -1,0 +1,71 @@
+enum MetricStatus {
+  HEALTHY
+  WARNING
+  CRITICAL
+}
+
+type OperationalMetric {
+  id: ID!
+  sourceService: String!
+  metricName: String!
+  metricValue: Float!
+  thresholdLimit: Float!
+  status: MetricStatus!
+  payload: String
+  createdAt: String!
+}
+
+type ServiceHealthSummary {
+  sourceService: String!
+  healthyCount: Int!
+  warningCount: Int!
+  criticalCount: Int!
+  avgLatencyMs: Float!
+}
+
+type AnomalyInsight {
+  service: String!
+  metric: String!
+  detectedValue: Float!
+  severity: MetricStatus!
+  rootCauseAnalysis: String!
+  suggestedMitigation: String!
+  analyzedAt: String!
+}
+
+type Query {
+  getMetrics(
+    service: String
+    status: MetricStatus
+    limit: Int = 50
+    offset: Int = 0
+  ): [OperationalMetric!]!
+
+  getServiceSummaries: [ServiceHealthSummary!]!
+
+  getMetricHistory(
+    service: String!
+    metricName: String!
+    minutes: Int = 60
+  ): [OperationalMetric!]!
+
+  diagnoseAnomaly(service: String!, metricName: String!): AnomalyInsight!
+}
+
+input IngestMetricInput {
+  sourceService: String!
+  metricName: String!
+  metricValue: Float!
+  thresholdLimit: Float!
+  payload: String
+}
+
+type Mutation {
+  ingestMetric(input: IngestMetricInput!): OperationalMetric!
+  batchIngestMetrics(inputs: [IngestMetricInput!]!): Int!
+}
+
+type Subscription {
+  metricStream(service: String): OperationalMetric!
+  anomalyAlertStream: AnomalyInsight!
+}
