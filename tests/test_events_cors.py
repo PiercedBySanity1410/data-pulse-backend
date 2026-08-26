@@ -12,6 +12,14 @@ def client():
     with app.test_client() as client:
         yield client
 
+def test_root_endpoint(client):
+    res_get = client.get('/')
+    assert res_get.status_code == 200
+    assert res_get.json == {"status": "ok", "service": "DataPulse API"}
+
+    res_head = client.head('/')
+    assert res_head.status_code == 200
+
 def test_cors_headers_on_health(client):
     res = client.get('/health', headers={'Origin': 'https://data-pulse-frontend-gamma.vercel.app'})
     assert res.status_code == 200
@@ -31,3 +39,11 @@ def test_events_sse_headers(client):
     assert res.headers.get('Content-Type') == 'text/event-stream'
     assert res.headers.get('Access-Control-Allow-Origin') == '*'
     assert res.headers.get('X-Accel-Buffering') == 'no'
+
+def test_events_sse_data_stream(client):
+    res = client.get('/events')
+    assert res.status_code == 200
+    # Read initial chunk of SSE stream
+    chunk = next(res.response)
+    assert b": ping" in chunk or b"data:" in chunk
+

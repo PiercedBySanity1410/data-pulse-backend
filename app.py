@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import random
+import threading
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from ariadne import load_schema_from_path, make_executable_schema, graphql_sync, explorer
@@ -12,6 +14,38 @@ from services.redis_service import redis_service
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+_simulator_started = False
+_simulator_lock = threading.Lock()
+
+def start_background_simulator():
+    global _simulator_started
+    if app.config.get("TESTING", False):
+        return
+    with _simulator_lock:
+        if _simulator_started:
+            return
+        _simulator_started = True
+
+    def run_sim():
+        from services.seed_data import generate_metric_payload, SERVICES
+        from resolvers.mutations import process_single_ingestion
+        print("[DataPulse Simulator] Background telemetry simulator started.")
+        while True:
+            try:
+                time.sleep(2.5)
+                db = SessionLocal()
+                try:
+                    service = random.choice(SERVICES)
+                    payload = generate_metric_payload(service)
+                    process_single_ingestion(db, payload)
+                finally:
+                    db.close()
+            except Exception as e:
+                print(f"[Simulator Warning] {e}")
+
+    sim_thread = threading.Thread(target=run_sim, daemon=True)
+    sim_thread.start()
 
 @app.after_request
 def add_cors_headers(response):
@@ -40,8 +74,13 @@ schema = make_executable_schema(type_defs, query, mutation, subscription)
 try:
     init_db()
     print("[DataPulse API] Database tables initialized successfully.")
+    start_background_simulator()
 except Exception as e:
     print(f"[DataPulse API] Database init warning: {e}")
+
+@app.route("/", methods=["GET", "HEAD"])
+def root():
+    return {"status": "ok", "service": "DataPulse API"}, 200
 
 @app.route("/health", methods=["GET", "OPTIONS"])
 def health_check():
@@ -100,9 +139,32 @@ def sse_events():
         # Send initial SSE keepalive comment to flush headers and establish stream immediately
         yield ": ping\n\n"
 
+        if not app.config.get("TESTING", False):
+            start_background_simulator()
+
         last_id = None
         redis_failed = False
         last_ping = time.time()
+
+        # Send initial metric immediately if available, or generate initial test event
+        try:
+            db = SessionLocal()
+            try:
+                q = db.query(OperationalMetric).order_by(OperationalMetric.created_at.desc())
+                latest = q.first()
+                if not latest:
+                    from services.seed_data import generate_metric_payload, SERVICES
+                    from resolvers.mutations import process_single_ingestion
+                    payload = generate_metric_payload(SERVICES[0])
+                    latest = process_single_ingestion(db, payload)
+
+                if latest:
+                    last_id = str(latest.id)
+                    yield f"data: {json.dumps(latest.to_dict())}\n\n"
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"[SSE Init Warning] {e}")
 
         # Attempt Redis PubSub streaming if client is available
         if redis_service.redis_client and not redis_failed:
@@ -125,7 +187,8 @@ def sse_events():
                 print(f"[SSE Error] Redis pubsub failed: {e}. Falling back to DB polling.")
                 redis_failed = True
 
-        # Database polling fallback loop
+        # Database polling fallback loop with automatic test event generation
+        idle_ticks = 0
         while True:
             try:
                 db = SessionLocal()
@@ -134,7 +197,21 @@ def sse_events():
                     latest = q.first()
                     if latest and str(latest.id) != last_id:
                         last_id = str(latest.id)
+                        idle_ticks = 0
                         yield f"data: {json.dumps(latest.to_dict())}\n\n"
+                    else:
+                        idle_ticks += 1
+                        # If no new event in DB after ~4s (2 ticks of 2s sleep), auto-generate test metric
+                        if idle_ticks >= 2:
+                            idle_ticks = 0
+                            from services.seed_data import generate_metric_payload, SERVICES
+                            from resolvers.mutations import process_single_ingestion
+                            service = random.choice(SERVICES)
+                            payload = generate_metric_payload(service)
+                            gen_metric = process_single_ingestion(db, payload)
+                            if gen_metric:
+                                last_id = str(gen_metric.id)
+                                yield f"data: {json.dumps(gen_metric.to_dict())}\n\n"
                 finally:
                     db.close()
             except GeneratorExit:
@@ -159,4 +236,5 @@ def sse_events():
 if __name__ == "__main__":
     print(f"[DataPulse Backend] Starting server on port {Config.PORT}...")
     app.run(host="0.0.0.0", port=Config.PORT, debug=True)
+
 
