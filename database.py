@@ -4,17 +4,21 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from config import Config
 
 def create_db_engine():
-    db_url = Config.DATABASE_URL
+    db_url = Config.DATABASE_URL or os.getenv("DATABASE_URL", "sqlite:///./datapulse_local.db")
+    
+    # Standardize postgres dialect for SQLAlchemy
     if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
+        db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+"):
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     connect_args = {}
-    if "supabase" in db_url or "sslmode" in db_url or not db_url.startswith("sqlite"):
-        connect_args["sslmode"] = "require"
+    if "sqlite" in db_url:
+        connect_args["check_same_thread"] = False
 
     try:
-        if db_url.startswith("sqlite"):
-            eng = create_engine(db_url, connect_args={"check_same_thread": False})
+        if "sqlite" in db_url:
+            eng = create_engine(db_url, connect_args=connect_args)
         else:
             eng = create_engine(
                 db_url,
