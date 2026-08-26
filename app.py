@@ -102,16 +102,23 @@ def sse_events():
 
         last_id = None
         redis_failed = False
+        last_ping = time.time()
 
         # Attempt Redis PubSub streaming if client is available
         if redis_service.redis_client and not redis_failed:
             try:
                 pubsub = redis_service.redis_client.pubsub()
                 pubsub.subscribe("telemetry:stream")
-                for message in pubsub.listen():
+                while not redis_failed:
+                    message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                     if message and message.get("type") == "message":
                         data = message.get("data")
                         yield f"data: {data}\n\n"
+
+                    # Keepalive ping every 10s to keep proxy connection alive
+                    if time.time() - last_ping > 10:
+                        yield ": keepalive\n\n"
+                        last_ping = time.time()
             except GeneratorExit:
                 return
             except Exception as e:
@@ -119,7 +126,6 @@ def sse_events():
                 redis_failed = True
 
         # Database polling fallback loop
-        last_ping = time.time()
         while True:
             try:
                 db = SessionLocal()
@@ -136,8 +142,8 @@ def sse_events():
             except Exception as db_err:
                 print(f"[SSE DB Warning] {db_err}")
 
-            # Send keepalive ping comment every 15s to keep proxy connection alive
-            if time.time() - last_ping > 15:
+            # Send keepalive ping comment every 10s to keep proxy connection alive
+            if time.time() - last_ping > 10:
                 yield ": keepalive\n\n"
                 last_ping = time.time()
 
